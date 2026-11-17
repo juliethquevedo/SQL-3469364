@@ -1,179 +1,107 @@
-/* clase 3 seguridad en base de datos 
-objetivo: evidenciar que las contraseñas esten 
-encriptadas (hash y salt ) y aplicar practicas de seguridad sobre los datos
 
-1. hash vs cifrado teoria
+/* CLASE 3: SEGURIDAD EN BASE DE DATOS
 
-2. contraseña con HASH + SALT (SHA2)
+OBJETIVO:
+Evidenciar que las contraseñas estén protegidas
+mediante HASH y SALT y aplicar prácticas de
+seguridad sobre los datos.
 
-3. procedimiento para registrar usuarios, hacer login y cambiar clave 
-
-4. cifrado reversible para datos sensibles (AES) 
-
-5. auditorias con trigger 
-
-6. vistas que ocultan los datos sensibles 
-
-7. usuarios y roles de mysql con minimo privilegio 
-(GRANT / REVOKE)
-
-
-8. prevencion de sql injeccion con consultas preparadas
+1. HASH VS CIFRADO
+2. CONTRASEÑAS CON HASH + SALT (SHA2)
+3. PROCEDIMIENTOS PARA REGISTRAR USUARIOS,
+   HACER LOGIN Y CAMBIAR CLAVE
+4. CIFRADO REVERSIBLE (AES)
+5. AUDITORÍAS CON TRIGGER
+6. VISTAS QUE OCULTAN DATOS SENSIBLES
+7. USUARIOS Y ROLES (GRANT / REVOKE)
+8. PREVENCIÓN DE SQL INJECTION
 */
 
 
-/*
-1- HASH VS  CIFRADO  para contraseñas
-    - convierte un texto en una huella de longituda fija 
-    -no se puede revertir . para validar el loginse calcula 
-    el hash de la clave escrita y se compara con el guardado 
-    -salt texto aleatorio distinto para cada usuario que se mezcla con la clave antes del hash asi dos usuarios 
-    con la misma clave tienen hashes diferentes y se frustra 
-    la rebundancia en las tablas 
-    
-    -cifrado (dos vias) para datos sensibles que hay que volver a leer 
-    -con una llave se cifra y con la misma llave se descifra 
+/* ==========================================
+   1. HASH VS CIFRADO
+   ==========================================
 
-    *nunca guarda contraseñas en segundo plano 
+   HASH:
+   - Convierte un texto en una huella de longitud fija.
+   - No se puede revertir.
+   - Para validar el login se calcula nuevamente
+     el HASH y se compara con el guardado.
+   - SALT: texto aleatorio distinto para cada usuario.
 
-    */
+   CIFRADO:
+   - Es reversible.
+   - Se utiliza para datos sensibles que necesitamos leer.
+   - Con una llave se cifra y con la misma llave se descifra.
 
-    -- demostracion del texto siempre da el mismo hash 
+   Nunca se deben guardar contraseñas en texto plano.
+*/
+
+
+-- Demostración: el mismo texto siempre da el mismo HASH.
+
 SELECT SHA2('clave123*', 256) AS hash_1;
+
 SELECT SHA2('clave123*', 256) AS hash_2;
 
 
--- demostracion utilizando SALT 
-SELECT SHA2(CONCAT ('a1b2c3', 'clave 123*'), 256) AS
-hash_usuario_A;
+-- Demostración utilizando SALT.
 
-SELECT SHA2(CONCAT ('a9y8x7', 'clave 123*'), 256) AS
-hash_usuario_B;
+SELECT SHA2(CONCAT('a1b2c3', 'clave123*'), 256)
+AS hash_usuario_A;
 
---generar un slat aleatorio  de 32 caracteres 
-hexadecimal 
---mezlamos UUID (identificador unico) + RAND() (numero al azar ) + la hora con milisegundos y 
--- tomamos los 32 caracteres del resultado 
--- en mysql 8 existe HEX(RANDON_BYTES(16)) mas robusto 
-pero mariadb no lo tiene 
+SELECT SHA2(CONCAT('a9y8x7', 'clave123*'), 256)
+AS hash_usuario_B;
 
-SELECT LEFT(SHA2(CONCAT(UUID(), RAND(), NOW(6)), 256), 32) AS salt_aleatotio;
 
-/* lo que nuenca se debe hacer con contraseñas 
-si alguien roba la base de datos o un empleado curioso
-consulta la tabla veria las claves de todos
-INSERT INTO usuarios (...) VALUES (...,'Miclave' 123, ...); -- MAL
+-- Generar un SALT aleatorio de 32 caracteres hexadecimales.
+-- Se mezclan UUID, RAND y la hora con milisegundos.
+
+SELECT LEFT(
+    SHA2(CONCAT(UUID(), RAND(), NOW(6)), 256),
+    32
+) AS salt_aleatorio;
+
+
+/* Lo que nunca se debe hacer con contraseñas.
+   Si alguien roba la base de datos podría ver las claves.
+
+   INSERT INTO usuarios (...)
+   VALUES (..., 'MiClave123', ...); -- MAL
 */
 
-/* 3. procedimientos almacenados de autenticacion 
--- centralizamos la logica de seguridad en procedimientos la aplicacion nunca toca directamente
-el hash solo llama estos procedimientos 
-DELIMITER cambia el fiun de la sentencia a // para poder usar; dentro del procedimiento
+
+/* ==========================================
+   3. PROCEDIMIENTOS ALMACENADOS
+   ==========================================
+
+   Centralizamos la lógica de seguridad.
+   La aplicación utiliza los procedimientos
+   para registrar usuarios, iniciar sesión
+   y cambiar contraseñas.
+
+   DELIMITER cambia el final de la sentencia
+   para poder utilizar ; dentro del procedimiento.
 */
 
+
+-- Eliminar procedimientos anteriores.
 
 DROP PROCEDURE IF EXISTS sp_registrar_usuario;
+DROP PROCEDURE IF EXISTS sp_registrar_usuarioV2;
 DROP PROCEDURE IF EXISTS sp_login_usuario;
+DROP PROCEDURE IF EXISTS sp_login;
 DROP PROCEDURE IF EXISTS sp_cambiar_password;
 
 
 DELIMITER //
 
---3.1 registrar usuario: valida para la politica de contraseñas genera slat y guarda el hash 
+
+/* ==========================================
+   3.1 REGISTRAR USUARIO
+   ========================================== */
+
 CREATE PROCEDURE sp_registrar_usuario(
-    IN p_nombre_usuario VARCHAR(50),
-    IN p_email VARCHAR (100),
-    IN p_rol VARCHAR (20),
-    IN p_id_cliente INT 
-)
-BEGIN
-    DECLARE v_slat CHAR(32);
-
-    --politica de contraseñas minimo 8 caracteres
---una mayuscula y un numero 
-    --tiene mayuscula si la clave es igual a a su version 
-    --en minuscula, no tiene 
-    -- se compara en BINARY  por que la collation "ci"
-    -- considera iguales A Y a
-
-
-IF CHAR_LENGTH(p_password) <8
-OR CAST(p_password AS BINARY) = CAST(LOWER(p_password) AS BINARY)
-OR p_password NOT REGEXP '[0-9]' THEN
-SIGNAL SQLSTATE '45000'
-SET MESSAGE_TEXT = ' la contraseña debe tener minimo 8,
-caracteres, una mayuscula y un numero';
-END IF;
-
-SET v_slat = LEFT(SHA2(CONCAT(UUID(), RAND(),
-    NOW(6)),256), 32);
-
-INSERT INTO usuarios (id_cliente, nombre_usuario,
-    email, password_hash, slat, rol)
-    VALUES (p_id_cliente,
-            p_nombre_usuario,
-            p_email,
-            SHA2(CONCAT(v_slat, p_password), 256),
-            -- se guarda el HASH no la clave
-            v_salt
-            p_rol);
-END //
-
-DELIMITER //
---3.2
-CREATE PROCEDURE sp_login (
-    IN p_nombre_usuario VARCHAR(50),
-    IN p_password VARCHAR(100),
-    OUT p_resultado VARCHAR(100)
-)
-
-BEGIN
-    DECLARE v_id INT DEFAULT NULL;
-    DECLARE v_hash CHAR(64);
-    DECLARE v_salt CHAR(32);
-    DECLARE v_bloqueado BOOLEAN;
-    DECLARE v_intentos INT;
-
-    DECLARE CONTINUE HANDLER FOR NOT FOUND SET v_id = NULL;
-
-    SELECT id_usuario, password_hash, salt, bloqueado,
-           intentos_fallidos
-    INTO v_id, v_hash, v_salt, v_bloqueado, v_intentos
-    FROM usuarios
-    WHERE nombre_usuario = p_nombre_usuario AND activo = TRUE;
-
-    IF v_id IS NULL THEN
-        -- Mismo mensaje que la clave incorrecta, no le decimos al atacante si el usuario existe
-        SET p_resultado = 'usuario o contraseña incorrectos';
-
-    ELSEIF v_bloqueado THEN
-        SET p_resultado = 'usuario bloqueado. contacte al administrador';
-
-    ELSEIF v_hash = SHA2(CONCAT(v_salt, p_password), 256) THEN
-        UPDATE usuarios
-        SET intentos_fallidos = 0, ultimo_acceso = NOW()
-        WHERE id_usuario = v_id;
-
-        SET p_resultado = 'acceso concedido';
-
-    ELSE
-        UPDATE usuarios
-        SET intentos_fallidos = v_intentos + 1,
-            bloqueado = (v_intentos + 1 >= 3) -- al tercer error se bloquea
-        WHERE id_usuario = v_id;
-
-        SET p_resultado = 'usuario o contraseña incorrectos';
-
-    END IF;
-
-END //
-
-DELIMITER ;
-
-
-DELIMITER //
-
-CREATE PROCEDURE sp_registrar_usuarioV2(
     IN p_nombre_usuario VARCHAR(50),
     IN p_email VARCHAR(100),
     IN p_password VARCHAR(100),
@@ -181,9 +109,12 @@ CREATE PROCEDURE sp_registrar_usuarioV2(
     IN p_id_cliente INT
 )
 BEGIN
+
     DECLARE v_salt CHAR(32);
 
-    -- Validar contraseña
+    -- Política de contraseñas:
+    -- Mínimo 8 caracteres, una mayúscula y un número.
+
     IF CHAR_LENGTH(p_password) < 8
        OR CAST(p_password AS BINARY) =
           CAST(LOWER(p_password) AS BINARY)
@@ -191,16 +122,21 @@ BEGIN
 
         SIGNAL SQLSTATE '45000'
         SET MESSAGE_TEXT =
-            'La contraseña debe tener minimo 8 caracteres, una mayuscula y un numero';
+        'La contraseña debe tener minimo 8 caracteres, una mayuscula y un numero';
+
     END IF;
 
-    -- Generar salt
+
+    -- Generar SALT aleatorio.
+
     SET v_salt = LEFT(
         SHA2(CONCAT(UUID(), RAND(), NOW(6)), 256),
         32
     );
 
-    -- Insertar usuario
+
+    -- Insertar usuario guardando HASH y SALT.
+
     INSERT INTO usuarios (
         id_cliente,
         nombre_usuario,
@@ -221,12 +157,17 @@ BEGIN
 END //
 
 
+/* ==========================================
+   3.2 INICIAR SESIÓN
+   ========================================== */
+
 CREATE PROCEDURE sp_login(
     IN p_nombre_usuario VARCHAR(50),
     IN p_password VARCHAR(100),
     OUT p_resultado VARCHAR(100)
 )
 BEGIN
+
     DECLARE v_id INT DEFAULT NULL;
     DECLARE v_hash CHAR(64);
     DECLARE v_salt CHAR(32);
@@ -235,6 +176,7 @@ BEGIN
 
     DECLARE CONTINUE HANDLER FOR NOT FOUND
         SET v_id = NULL;
+
 
     SELECT
         id_usuario,
@@ -252,15 +194,18 @@ BEGIN
     WHERE nombre_usuario = p_nombre_usuario
       AND activo = TRUE;
 
+
     IF v_id IS NULL THEN
 
         SET p_resultado =
-            'Usuario o contraseña incorrectos';
+        'Usuario o contraseña incorrectos';
+
 
     ELSEIF v_bloqueado THEN
 
         SET p_resultado =
-            'Usuario bloqueado. Contacte al administrador';
+        'Usuario bloqueado. Contacte al administrador';
+
 
     ELSEIF v_hash =
            SHA2(CONCAT(v_salt, p_password), 256) THEN
@@ -272,16 +217,87 @@ BEGIN
 
         SET p_resultado = 'Acceso concedido';
 
+
     ELSE
 
         UPDATE usuarios
-        SET intentos_fallidos = COALESCE(v_intentos, 0) + 1,
+        SET intentos_fallidos =
+            COALESCE(v_intentos, 0) + 1,
+
             bloqueado =
-                (COALESCE(v_intentos, 0) + 1 >= 3)
+            (COALESCE(v_intentos, 0) + 1 >= 3)
+
         WHERE id_usuario = v_id;
 
         SET p_resultado =
-            'Usuario o contraseña incorrectos';
+        'Usuario o contraseña incorrectos';
+
+    END IF;
+
+END //
+
+
+/* ==========================================
+   3.3 CAMBIAR CONTRASEÑA
+   ========================================== */
+
+CREATE PROCEDURE sp_cambiar_password(
+    IN p_nombre_usuario VARCHAR(50),
+    IN p_password_actual VARCHAR(100),
+    IN p_password_nueva VARCHAR(100),
+    OUT p_resultado VARCHAR(100)
+)
+BEGIN
+
+    DECLARE v_salt_nuevo CHAR(32);
+
+
+    -- Verificar contraseña actual.
+
+    IF NOT EXISTS (
+        SELECT 1
+        FROM usuarios
+        WHERE nombre_usuario = p_nombre_usuario
+        AND password_hash =
+            SHA2(CONCAT(salt, p_password_actual), 256)
+    ) THEN
+
+        SET p_resultado =
+        'La contraseña actual no es correcta';
+
+
+    -- Validar nueva contraseña.
+
+    ELSEIF CHAR_LENGTH(p_password_nueva) < 8
+       OR CAST(p_password_nueva AS BINARY) =
+          CAST(LOWER(p_password_nueva) AS BINARY)
+       OR p_password_nueva NOT REGEXP '[0-9]' THEN
+
+        SET p_resultado =
+        'La nueva contraseña no cumple con la politica';
+
+
+    ELSE
+
+        -- Generar nuevo SALT.
+
+        SET v_salt_nuevo = LEFT(
+            SHA2(CONCAT(UUID(), RAND(), NOW(6)), 256),
+            32
+        );
+
+
+        -- Actualizar HASH y SALT.
+
+        UPDATE usuarios
+        SET salt = v_salt_nuevo,
+            password_hash =
+            SHA2(CONCAT(v_salt_nuevo, p_password_nueva), 256)
+        WHERE nombre_usuario = p_nombre_usuario;
+
+
+        SET p_resultado =
+        'Contraseña cambiada correctamente';
 
     END IF;
 
@@ -289,97 +305,216 @@ END //
 
 DELIMITER ;
 
-CREATE PROCEDURE sp_cambiar_password(
-    IN nombre_usuario VARCHAR(50);
-    IN p_password_actual VARCHAR (100);
-    IN p_password_nueva VARCHAR (100);
-    OUT p_resultado VARCHAR(100);
-    )
-    BEGIN 
-    DECLARE v_salt_nuevo CHAR(32);
 
-    IF NOT EXISTS (SELECT 1 FROM usuarios
-    WHERE nombre_usuario = p_nombre_usuario 
-    AND password_hash = SHA2(CONCAT(salt,
-    p_password_actual), 256)) THEN 
-    SET p_resultado = 'la contraseña actual no es correcta';
-    ELSEIF CHAR_LENGTH(p_password_nueva) < 8
-    OR CAST(p_password_nueva AS BINARY)
-    OR p_password_nueva NOT REGEXP '[O-9]' THEN
-    SET p_resultado = ' la nueva contraseña no cumple con la politica';
-    ELSE 
-    SET v_salt_nuevo = LEFT(SHA2(CONCAT(UUDI(), RAND(), NOW(6)), 256)32);
-    UPDATE usuarios
-    SET salt = v_salt_nuevo,
-    password_hash = SHA2(CONCAT(v_salt_nuevo,
-    p_password_nueva), 256)
-    WHERE nombre_usuario = p_nombre_usuario
-    /* Auditoria trigger que registra eventos de seguridad
-INSERT, UPDATE, o DELETE sobre la tabla
-Guardamos quien y cuando cambio una clave o se bloqueo el
-usuario
-nunca se daña la contraseña en la auditoria
+/* ==========================================
+   5. AUDITORÍA CON TRIGGER
+   ==========================================
+
+   El trigger registra eventos de seguridad
+   cuando se actualiza la tabla usuarios.
+
+   Guarda quién y cuándo realizó el cambio
+   de contraseña o el bloqueo del usuario.
+
+   Nunca guarda la contraseña en la auditoría.
 */
-CREATE TABLE IF NOT EXISTS auditoria_usuarios(
+
+
+-- Crear tabla de auditoría.
+
+CREATE TABLE IF NOT EXISTS auditoria_usuarios (
     id_auditoria INT AUTO_INCREMENT PRIMARY KEY,
     id_usuario INT NOT NULL,
-    accion VARCHAR (30)NOT NULL,
-    detalle VARCHAR(255)NULL,
-    usuario_bd VARCHAR(100)NOT NULL,
+    accion VARCHAR(30) NOT NULL,
+    detalle VARCHAR(255) NULL,
+    usuario_bd VARCHAR(100) NOT NULL,
     fecha DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
-)ENGINE = InnoDB;
+) ENGINE = InnoDB;
 
-DROP TRIGGER IF EXISTS trg_usuario_auditoria
+
+-- Eliminar trigger anterior.
+
+DROP TRIGGER IF EXISTS trg_usuario_auditoria;
+DROP TRIGGER IF EXISTS trg_usuarios_auditoria;
+
+
 DELIMITER //
+
+
+-- Crear trigger de auditoría.
 
 CREATE TRIGGER trg_usuarios_auditoria
 AFTER UPDATE ON usuarios
 FOR EACH ROW
 BEGIN
--- OLD = valores antes del UPDATE , NEW = valores despues
 
-IF NEW.password_hash <> OLD.password_hash THEN
-INSERT INTO auditoria_usuarios (id_usuario,accion,detalle,usuario_bd)
-VALUES (NEW.id_usuario,'CAMBIO_PASSWORD','se cambio la contraseña', CURRENT_USER());
-END IF;
+    -- OLD = valores antes del UPDATE.
+    -- NEW = valores después del UPDATE.
 
-IF NEW.bloqueado = TRUE AND OLD.bloqueado = FALSE THEN
-INSERT INTO auditoria_usuarios(id_usuario,accion,detalle,usuario_bd)
-VALUES (NEW.id_usuario,'BLOQUEO','bloqueado por 3 intentos fallidos', CURRENT_USER());
-END IF;
-END//
+
+    -- Registrar cambio de contraseña.
+
+    IF NOT (NEW.password_hash <=> OLD.password_hash) THEN
+
+        INSERT INTO auditoria_usuarios (
+            id_usuario,
+            accion,
+            detalle,
+            usuario_bd
+        )
+        VALUES (
+            NEW.id_usuario,
+            'CAMBIO_PASSWORD',
+            'Se cambio la contraseña',
+            CURRENT_USER()
+        );
+
+    END IF;
+
+
+    -- Registrar bloqueo de usuario.
+
+    IF NEW.bloqueado = TRUE
+       AND OLD.bloqueado = FALSE THEN
+
+        INSERT INTO auditoria_usuarios (
+            id_usuario,
+            accion,
+            detalle,
+            usuario_bd
+        )
+        VALUES (
+            NEW.id_usuario,
+            'BLOQUEO',
+            'Bloqueado por 3 intentos fallidos',
+            CURRENT_USER()
+        );
+
+    END IF;
+
+END //
+
 DELIMITER ;
-/* Probar registro login bloqueo y cambio de clave 
---Registrar usuarios (las claves solo viajan como parametro y nunca se guardan )*/
-CALL sp_registrar_usuario('admin','admin@tienda.com','Admin*2026Seguro','ADMIN',NULL)
-CALL sp_registrar_usuario('vendedor', 'ventas@tienda.com', 'Ventas#2026', 'VENDEDOR', NULL);
-CALL sp_registrar_usuario('ana.gomez', 'ana.gomez@tienda.com', 'AnaGomez2026', 'CLIENTE', 1);
-CALL sp_registrar_usuario('carlos.perez', 'carlos.perez@tienda.com', 'Carlos2026', 'CLIENTE', 2);
-CALL sp_registrar_usuario('debil', 'debil@tienda.com', '12345', 'CLIENTE', null); -- lo debe rechazar por tener contraseña debil
-/* la contraseña no se ve en texto plano solo el hash y salt */
-SELECT id_usuario, nombre_usuario, rol, salt, password_hash
+
+
+/* ==========================================
+   PRUEBAS DE REGISTRO, LOGIN Y BLOQUEO
+   ========================================== */
+
+
+-- Registrar usuarios.
+
+CALL sp_registrar_usuario(
+    'admin',
+    'admin@tienda.com',
+    'Admin*2026Seguro',
+    'ADMIN',
+    NULL
+);
+
+CALL sp_registrar_usuario(
+    'vendedor',
+    'ventas@tienda.com',
+    'Ventas#2026',
+    'VENDEDOR',
+    NULL
+);
+
+CALL sp_registrar_usuario(
+    'ana.gomez',
+    'ana.gomez@tienda.com',
+    'AnaGomez2026',
+    'CLIENTE',
+    1
+);
+
+CALL sp_registrar_usuario(
+    'carlos.perez',
+    'carlos.perez@tienda.com',
+    'Carlos2026!',
+    'CLIENTE',
+    2
+);
+
+
+-- Este registro debe rechazarse por contraseña débil.
+
+CALL sp_registrar_usuario(
+    'debil',
+    'debil@tienda.com',
+    '12345',
+    'CLIENTE',
+    NULL
+);
+
+
+-- Consultar HASH y SALT.
+
+SELECT
+    id_usuario,
+    nombre_usuario,
+    rol,
+    salt,
+    password_hash
 FROM usuarios;
 
-/* login correcto */
-CALL sp_login('ana.gomez', 'AnaGomez2026', @resultado);
-SELECT @resultado AS login_correcto;
-/* tres intentos fallidos -> bloqueo */
-CALL sp_login('carlos.perez', 'clave_mala', @r1);
-CALL sp_login('carlos.perez', 'clave_mala', @r2);
-CALL sp_login('carlos.perez', 'clave_mala', @r3);
-CALL sp_login('carlos.perez', 'Carlos2026', @r4); -- aunque ahora sea correcta el usuario esta bloqueado
 
---contraseña correcta al cuarto intento el usuario esta bloqueado
-SELECT @r1 @r2 @r3 @r4;
-SELECT nombre_usuario, intentos fallidos, bloqueado, FROM usuarios;
---Cambio de contraseña
-CALL sp_cambiar_password('ana.gomez', 'AnaGomez2026', 'NuevaClave2026', @r);
+-- Probar login correcto.
+
+CALL sp_login(
+    'ana.gomez',
+    'AnaGomez2026',
+    @resultado
+);
+
+SELECT @resultado AS login_correcto;
+
+
+-- Tres intentos fallidos para bloquear al usuario.
+
+CALL sp_login('carlos.perez', 'clave_mala', @r1);
+
+CALL sp_login('carlos.perez', 'clave_mala', @r2);
+
+CALL sp_login('carlos.perez', 'clave_mala', @r3);
+
+CALL sp_login('carlos.perez', 'Carlos2026!', @r4);
+
+
+-- Consultar resultados de los cuatro intentos.
+
+SELECT @r1, @r2, @r3, @r4;
+
+
+-- Consultar intentos fallidos y bloqueos.
+
+SELECT
+    nombre_usuario,
+    intentos_fallidos,
+    bloqueado
+FROM usuarios;
+
+
+-- Cambiar contraseña.
+
+CALL sp_cambiar_password(
+    'ana.gomez',
+    'AnaGomez2026',
+    'NuevaClave2026',
+    @r
+);
+
 SELECT @r AS cambio;
 
---Evidencia de auditoria: aparecen el bloqueo y cambio de clave
+
+-- Consultar auditoría.
+
 SELECT * FROM auditoria_usuarios;
 
--- El administrador desbloquea al usuario
-UPDATE usuarios SET bloqueado = FALSE, 
-intentos_fallidos = 0
+
+-- El administrador desbloquea al usuario.
+
+UPDATE usuarios
+SET bloqueado = FALSE,
+    intentos_fallidos = 0
 WHERE nombre_usuario = 'carlos.perez';
