@@ -79,7 +79,7 @@ INSERT INTO citas (id_cliente, id_peluqueria, id_servicio, id_profesional, fecha
 -- G.SECCIÓN: INSERTAR USUARIOS DE PRUEBA (Control de Acceso y Seguridad)
 -- ¿Qué hace este código?: Inserta los usuarios para el inicio de sesión 
 -- en el aplicativo web Glow Girl, asignando roles (CLIENTE, ADMIN) y 
--- asegurando el cifrado de las contraseñas para cumplir con la norma IEEE 830.
+-- asegurando el cifrado de las contraseñas.
 -- NOTA: La contraseña en texto plano para iniciar sesión con todos es: "password"
 -- =====================================================================
 INSERT INTO usuarios (id_cliente, nombre_usuario, email, password_hash, salt, rol, activo, intentos_fallidos, bloqueado) VALUES
